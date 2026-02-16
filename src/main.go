@@ -1,67 +1,99 @@
 package main
 
 import (
-    "net/http"
-
-    "github.com/gin-gonic/gin"
+	"encoding/json"
+	"log"
+	"net/http"
+	"strings"
+	"sync"
 )
 
-// album represents data about a record album.
-type album struct {
-    ID     string  `json:"id"`
-    Title  string  `json:"title"`
-    Artist string  `json:"artist"`
-    Price  float64 `json:"price"`
+type Product struct {
+	ProductID string  `json:"productId"`
+	Name      string  `json:"name"`
+	Price     float64 `json:"price"`
 }
 
-// albums slice to seed record album data.
-var albums = []album{
-    {ID: "1", Title: "Blue Train", Artist: "John Coltrane", Price: 56.99},
-    {ID: "2", Title: "Jeru", Artist: "Gerry Mulligan", Price: 17.99},
-    {ID: "3", Title: "Sarah Vaughan and Clifford Brown", Artist: "Sarah Vaughan", Price: 39.99},
-}
+var (
+	mu    sync.Mutex
+	store = make(map[string]Product)
+)
 
 func main() {
-    router := gin.Default()
-    router.GET("/albums", getAlbums)
-    router.GET("/albums/:id", getAlbumByID)
-    router.POST("/albums", postAlbums)
+	http.HandleFunc("/products", productsHandler)     // GET list, POST create
+	http.HandleFunc("/products/", productByIDHandler) // GET by id
 
-    router.Run(":8080")
+	log.Println("Server running on :8080")
+	log.Fatal(http.ListenAndServe(":8080", nil))
 }
 
-// getAlbums responds with the list of all albums as JSON.
-func getAlbums(c *gin.Context) {
-    c.IndentedJSON(http.StatusOK, albums)
+// POST /products
+// GET  /products
+func productsHandler(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodPost:
+		var p Product
+		if err := json.NewDecoder(r.Body).Decode(&p); err != nil {
+			http.Error(w, "Invalid JSON", http.StatusBadRequest)
+			return
+		}
+		if p.ProductID == "" || p.Name == "" || p.Price <= 0 {
+			http.Error(w, "Missing or invalid fields", http.StatusBadRequest)
+			return
+		}
+
+		mu.Lock()
+		if _, exists := store[p.ProductID]; exists {
+			mu.Unlock()
+			http.Error(w, "Product already exists", http.StatusConflict)
+			return
+		}
+		store[p.ProductID] = p
+		mu.Unlock()
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		_ = json.NewEncoder(w).Encode(p)
+
+	case http.MethodGet:
+		mu.Lock()
+		products := make([]Product, 0, len(store))
+		for _, v := range store {
+			products = append(products, v)
+		}
+		mu.Unlock()
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(w).Encode(products)
+
+	default:
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+	}
 }
 
-// postAlbums adds an album from JSON received in the request body.
-func postAlbums(c *gin.Context) {
-    var newAlbum album
+// GET /products/{productId}
+func productByIDHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	id := strings.TrimPrefix(r.URL.Path, "/products/")
+	if id == "" {
+		http.Error(w, "Missing productId", http.StatusBadRequest)
+		return
+	}
 
-    // Call BindJSON to bind the received JSON to
-    // newAlbum.
-    if err := c.BindJSON(&newAlbum); err != nil {
-        return
-    }
+	mu.Lock()
+	p, ok := store[id]
+	mu.Unlock()
 
-    // Add the new album to the slice.
-    albums = append(albums, newAlbum)
-    c.IndentedJSON(http.StatusCreated, newAlbum)
-}
+	if !ok {
+		http.Error(w, "Product not found", http.StatusNotFound)
+		return
+	}
 
-// getAlbumByID locates the album whose ID value matches the id
-// parameter sent by the client, then returns that album as a response.
-func getAlbumByID(c *gin.Context) {
-    id := c.Param("id")
-
-    // Loop through the list of albums, looking for
-    // an album whose ID value matches the parameter.
-    for _, a := range albums {
-        if a.ID == id {
-            c.IndentedJSON(http.StatusOK, a)
-            return
-        }
-    }
-    c.IndentedJSON(http.StatusNotFound, gin.H{"message": "album not found"})
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(w).Encode(p)
 }
