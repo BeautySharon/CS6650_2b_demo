@@ -1,277 +1,300 @@
-# CS6650 – HW5
+# CS6650 – HW6
+
+# Part II: Load Testing
 
 ## Overview
 
-In this assignment, we implemented a Product API based on the provided OpenAPI specification and deployed it to AWS using Docker, ECR, ECS, and Terraform.
+In this part, we performed load testing on the deployed Product API using Locust.
+The objective was to evaluate system scalability and observe behavior under increasing concurrent users.
 
-The API supports:
+The API endpoint tested:
 
-- POST /products
-- GET /products
-- GET /products/{id}
-
-Products are stored in memory using a Go hashmap.
-
-The infrastructure is fully automated using Terraform.
+GET /products/search?q=Electronics
 
 ---
 
-# Architecture
+## Environment Setup
 
-Local Development → Docker → ECR → ECS (Fargate) → Public IP Access
+<img src="screenshots/local_test2.png" width="500">
+<img src="screenshots/local_test1.png" width="500">
+<img src="screenshots/build_docker.png" width="500">
+<img src="screenshots/docker_test.png" width="500">
+<img src="screenshots/aws_login.png" width="500">
+<img src="screenshots/deploy_test1.png" width="500">
 
-Components:
+## Load Testing Setup
 
-- Go Web Server
-- Docker container
-- AWS ECR (image registry)
-- AWS ECS (Fargate)
-- CloudWatch logging
-- Terraform for Infrastructure as Code
+- Tool: Locust
+- Target host: http://54.189.176.71:8080
+- Infrastructure: ECS Fargate deployment
+- Test strategy: gradually increase concurrent users
 
----
+Test levels:
 
-# How to Deploy on a New Machine
-
-## Step 1 – Clone the repository
-
-<img src="screenshots/git_clone.png" width="500">
-
----
-
-## Step 2 – Local Test
-
-<img src="screenshots/test2.png" width="500">
-<img src="screenshots/code_local_test.png" width="500">
-
-## Step 3 – Build Docker Image (Local Test)
-
-<img src="screenshots/docker_build.png" width="500">
-
-## Step 4 – Configure AWS Credentials
-
-## Step 5 – Deploy Infrastructure with Terraform
-
-<img src="screenshots/Terraform_init.png" width="500">
-<img src="screenshots/Terraform_apply.png" width="500">
+- 50 users
+- 100 users
+- 1000 users
+- 5000 users
 
 ---
 
-## Step 6 – Access the API
+## Results
 
-Use the public IP from Terraform output: http://35.84.31.198:8080
+### 50 Users
 
-<img src="screenshots/API_test1.png" width="500">
-<img src="screenshots/API_test2.png" width="500">
----
+<img src="screenshots/uesr50.png" width="500">
 
-### API Examples
+Observation:
 
-### POST /products
-
-curl -i -X POST http://35.84.31.198:8080/products \
--H "Content-Type: application/json" \
--d '{"productId":"1","name":"MacBook","price":1999}'
-
-Expected: HTTP/1.1 201 Created
+- Low latency (~40ms)
+- Stable RPS (~1200)
+- No failures
+- System underutilized
 
 ---
 
-### GET /products
+### 100 Users
 
-curl -i http://35.84.31.198:8080/products
+<img src="screenshots/user100.png" width="500">
 
-Expected: HTTP/1.1 200 OK
+Observation:
 
----
-
-### GET /products/{id}
-
-curl -i http://35.84.31.198:8080/products/1
-
-Expected: HTTP/1.1 200 OK
+- Slight latency increase (~47ms)
+- Higher throughput (~1900 RPS)
+- Still stable
+- No failures
 
 ---
 
-### Error Cases
+### 1000 Users
 
-404 Not Found – product does not exist  
-400 Bad Request – invalid input  
-409 Conflict – duplicate product
+<img src="screenshots/user1000.png" width="500">
 
----
+Observation:
 
-## 6.Load Testing with Locust
-
-Test configuration:
-
-<img src="screenshots/Locust_config.png" width="500">
-
-- 50 concurrent users
-- Spawn rate: 5 users/sec
-
-Results:
-
-  <img src="screenshots/Locust_res.png" width="500">
-  
-- Average RPS: ~32.7
-- Average response time: ~44 ms
-- 95th percentile latency: ~110 ms
-- Failure rate: 0% system failure
-
-Observed failures were due to duplicate product IDs returning HTTP 409 responses, not server crashes.
+- Latency increased (~233ms)
+- Throughput increased (~2700 RPS)
+- System still functional
+- Beginning of saturation
 
 ---
 
-# Design Discussion
+### 5000 Users (Peak Load)
 
-## Stress Testing Analysis
+<img src="screenshots/user5000.png" width="500">
+<img src="screenshots/user5000_2.png" width="500">
 
-### Which operations are most common in real-world systems?
+Observation:
 
-In e-commerce platforms:
-
-- Read operations (GET) dominate traffic
-- Write operations (POST) are less frequent
-
-Our implementation uses:
-
-- `map[string]Product`
-
-### Time Complexity
-
-| Operation | Time Complexity |
-| --------- | --------------- |
-| GET by ID | O(1)            |
-| Insert    | O(1)            |
-
-This design is efficient for read-heavy workloads because hashmap lookups are constant time.
+- Latency significantly increased (~830ms)
+- Throughput plateau (~3000 RPS)
+- No explicit failures
+- System reached performance bottleneck
 
 ---
 
-## Why did we not see difference between HttpUser and FastHttpUser?
+## Infrastructure Metrics
 
-Possible reasons:
+### CPU and Memory Utilization
 
-- Concurrency level (50 users) is relatively low
-- Network latency dominates total request time
-- ECS Fargate CPU limits throughput
-- Small payload size reduces HTTP processing overhead
+<img src="screenshots/cpu1.png" width="500">
+<img src="screenshots/cpu2.png" width="500">
 
-At higher concurrency levels (e.g., 500+ users), FastHttpUser would likely show measurable improvement.
+Observation:
 
----
-
-## Scalable Backend Design (Design Only)
-
-The provided `api.yaml` describes a much larger e-commerce system. Below is a production-ready scalable design approach.
-
-### 1. Microservices Architecture
-
-Split into independent services:
-
-- Product Service
-- Order Service
-- User Service
-- Inventory Service
-- Payment Service
-
-Each service:
-
-- Independently deployable
-- Owns its own database
-- Communicates via REST or message queue
-
-### 2. Replace In-Memory Storage
-
-Current limitation:
-
-- Data lost on restart
-- Not horizontally scalable
-
-Production solution:
-
-- DynamoDB (NoSQL)
-- Or RDS (PostgreSQL)
-
-Use read replicas for scaling reads.
-
-### 3. Add Load Balancer
-
-- Application Load Balancer (ALB)
-- Distribute traffic across multiple ECS tasks
-
-### 4. Enable Auto Scaling
-
-Scale based on:
-
-- CPU usage
-- Request count
-- Target tracking policy
-
-### 5. Add Caching Layer
-
-Use Redis (ElastiCache):
-
-- Cache hot products
-- Reduce database load
-- Improve latency
-
-### 6. Asynchronous Processing
-
-For order workflows:
-
-- Use SQS or Kafka
-- Decouple services
-- Improve resilience
-- Enable retry and fault tolerance
-
-### 7. Observability
-
-- CloudWatch metrics
-- Distributed tracing
-- Centralized logging
-- Alerts and monitoring dashboards
+- CPU reached 100% utilization
+- Memory utilization increased significantly
+- Indicates compute-bound bottleneck
 
 ---
 
-## Declarative vs Imperative
+## Analysis
 
-Terraform is a declarative language.
+The experiment shows typical scalability behavior:
 
-### Declarative
+- Throughput increases with load initially
+- Latency increases gradually
+- Eventually throughput plateaus
+- CPU saturation becomes bottleneck
 
-You define what the final infrastructure should look like.
+Even without request failures, system degradation is observable via:
 
-Example:
+- Increased response time
+- CPU saturation
+- Throughput flattening
 
-```hcl
-resource "aws_ecs_service" "example" {
-  desired_count = 2
-```
+This indicates the system reached its maximum capacity.
 
-Terraform:
+---
 
-- Compares current state
-- Calculates differences
-- Applies necessary changes
+## Conclusion
 
-Example output:
+The Product API demonstrates horizontal scalability up to moderate load levels.
+Under extreme load (5000 users), the ECS task becomes CPU-bound, resulting in increased latency and throughput saturation.
 
-Plan: 2 to add, 0 to change, 0 to destroy
-Imperative
+This experiment validates expected system behavior under stress and highlights the importance of autoscaling for production deployments.
 
-You define step-by-step instructions, for example:
+# Part III: Horizontal Scaling with Auto Scaling
 
-- Create VPC
-- Create subnet
-- Create cluster
-- Launch container
+## System Setup
 
-### Why Declarative Helps
+An Application Load Balancer (ALB) was introduced to enable horizontal scaling of the product search service deployed on Amazon ECS Fargate.
 
-- Infrastructure is reproducible
-- Version controlled
-- Easier rollback
-- Idempotent execution
-- Safer automation
+The ALB acts as the entry point and distributes requests across multiple service tasks registered in a target group. Health checks ensure that only healthy tasks receive traffic.
+
+### Key configuration
+
+**Load Balancer**
+
+<img src="screenshots/create_load_balancer.png" width="500">
+
+- Listener: HTTP:80
+- Target type: IP (Fargate requirement)
+- Container port: 8080
+- Health check path: `/health`
+
+**ECS Service**
+
+- Launch type: Fargate
+- Scheduling strategy: Replica
+- Baseline capacity: 2 tasks
+- Rolling deployment
+
+**Service Auto Scaling**
+
+- Metric: ECSServiceAverageCPUUtilization
+- Baseline target: 70%
+- Min tasks: 2
+- Max tasks: 4
+
+This setup enables dynamic capacity adjustment without modifying application logic.
+
+---
+
+## Experiment 1 – Baseline Horizontal Scaling
+
+Low load test with fixed capacity.
+
+### user50
+
+<img src="screenshots/part3_user50_1.png" width="500">
+<img src="screenshots/part3_user50_2.png" width="500">
+<img src="screenshots/part3_user50_3.png" width="500">
+<img src="screenshots/part3_user50_4.png" width="500">
+
+### user100
+
+<img src="screenshots/part3_user100_1.png" width="500">
+<img src="screenshots/part3_user100_2.png" width="500">
+
+### user1000
+
+<img src="screenshots/part3_user1000_1.png" width="500">
+<img src="screenshots/part3_user1000_2.png" width="500">
+
+### Observations
+
+- CPU utilization increased with workload
+- Service operated with baseline capacity
+- No scaling triggered under moderate load
+- System remained stable
+- Additionally, a reduction in average response time compared to Part II was observed under similar workloads. This improvement is attributed to reduced request queueing delay resulting from parallel processing across multiple tasks rather than per-request execution speedup.
+
+This confirms correct baseline operation of the horizontally distributed architecture.
+
+---
+
+## Experiment 2 – Deterministic Scaling Validation
+
+To validate scaling behavior independently of workload variability, the target CPU threshold was temporarily lowered to 40%.
+
+A moderate load test (approximately 1000 users) was executed.
+
+### Observations
+
+<img src="screenshots/cpu40.png" width="500">
+
+- Rapid increase in average CPU utilization relative to threshold
+- ECS service launched additional tasks
+- Target group healthy target count increased
+- Scaling lifecycle observed (running → initial → healthy)
+
+This controlled experiment confirms that scaling policy configuration directly influences capacity adjustment behavior.
+
+---
+
+## Experiment 3 – Resilience / Failure Injection Test
+
+During an active load test, a running task was manually stopped to simulate instance failure.
+
+<img src="screenshots/stop1.png" width="500">
+
+### Observations
+
+<img src="screenshots/stop2.png" width="500">
+
+- The stopped task entered draining state
+- Remaining tasks continued serving requests
+- No visible service outage occurred
+- ECS automatically maintained desired capacity
+- Load balancer routed traffic only to healthy targets
+
+This experiment demonstrates the resilience benefits of horizontal scaling, where individual instance failures do not disrupt system availability.
+
+---
+
+## Variability Across Repeated Experiments
+
+Repeated experiments with identical user loads produced different scaling outcomes.
+
+For example, in some runs, scaling occurred at approximately 1000 users, while in others it did not.
+
+This behavior is expected due to several factors:
+
+- Stochastic request distribution by the load balancer
+- Scaling decisions based on average CPU rather than user count
+- Runtime warm-state effects (connection reuse, caching)
+- Client-side load generation variability affecting effective throughput
+
+These observations highlight that horizontally scaled distributed systems exhibit probabilistic rather than deterministic performance characteristics.
+
+---
+
+## Trade-off Analysis: Horizontal vs Vertical Scaling
+
+### Horizontal Scaling Advantages
+
+- Improved availability through redundancy
+- Fault tolerance against instance failure
+- Elastic capacity adjustment
+- Load distribution across instances
+
+### Horizontal Scaling Challenges
+
+- Increased infrastructure complexity
+- Metric-driven scaling variability
+- Load balancing overhead
+- Potential consistency considerations in stateful systems
+
+Compared to vertical scaling, horizontal scaling provides stronger resilience and elasticity, making it foundational to modern distributed system design.
+
+---
+
+## Scaling Behavior Prediction
+
+Based on experimental observations:
+
+- Sudden load spikes trigger delayed but automatic scaling due to metric smoothing
+- Gradual load increases result in smoother scaling transitions
+- High thresholds reduce scaling sensitivity
+- Lower thresholds increase responsiveness but may cause over-provisioning
+
+These behaviors align with expected target-tracking auto scaling dynamics.
+
+---
+
+## Conclusion
+
+The horizontally scalable architecture successfully resolved the performance limitations identified in Part II. By introducing an Application Load Balancer, dynamic target registration, and CPU-based auto scaling, the system demonstrated elastic capacity growth, resilience to instance failure, and stable request handling under increased load.
+
+The experiments also revealed inherent variability in scaling behavior, reinforcing key distributed systems concepts such as probabilistic load distribution and metric-driven elasticity.
